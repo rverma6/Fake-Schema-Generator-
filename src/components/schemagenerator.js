@@ -12,23 +12,32 @@ function SchemaGenerator() {
     const handleGenerateSchema = async () => {
         setLoading(true);
         setError(null);
-
+    
         try {
             const response = await axios.post('http://localhost:3001/api/generate-schema', { prompt });
-            setSqlCode(response.data.sql_code);
+            let sqlCode = response.data.sql_code;
+    
+            // Remove markdown code block delimiters if present
+            sqlCode = sqlCode.replace(/```sql/g, '').replace(/```/g, '').trim();
+    
+            console.log('Generate SQL Code:', sqlCode);
+            setSqlCode(sqlCode); // Ensure the cleaned-up sqlCode is set here
+            
         } catch (error) {
             setError('Failed to generate schema. Please try again.');
         } finally {
             setLoading(false);
         }
     };
+    
 
     const handleGenerateData = async () => {
         setLoading(true);
         setError(null);
 
         try {
-            const response = await axios.post('http://localhost:3001/api/generate-data', { sqlCode });
+            console.log('Generating data with SQL Code:', sqlCode);
+            const response = await axios.post('http://localhost:3001/api/generate-data', { sqlCode, tableName: 'users' });
             setData(response.data);
         } catch (error) {
             setError('Failed to generate data. Please try again.');
@@ -42,6 +51,7 @@ function SchemaGenerator() {
         setError(null);
 
         try {
+            console.log('Generating more data with SQL Code:', sqlCode, 'Additional Rows:', additionalRows);
             const response = await axios.post('http://localhost:3001/api/generate-more-data', {
                 sqlCode,
                 additionalRows,

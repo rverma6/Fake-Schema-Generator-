@@ -1,19 +1,14 @@
-// testConnection.js
-const { Pool } = require('pg');
-require('dotenv').config();
+require('dotenv').config({ path: '../.env' });
+const { Client } = require('pg');
 
-console.log('Database URL:', process.env.DATABASE_URL);
+console.log('Loaded DATABASE_URL:', process.env.DATABASE_URL);
 
 
-const pool = new Pool({
+const client = new Client({
     connectionString: process.env.DATABASE_URL,
 });
 
-pool.query('SELECT NOW()', (err, res) => {
-    if (err) {
-        console.error('Connection error:', err.message);
-    } else {
-        console.log('Connection successful:', res.rows);
-    }
-    pool.end();
-});
+client.connect()
+    .then(() => console.log('Connected successfully'))
+    .catch(err => console.error('Connection error', err.stack))
+    .finally(() => client.end());

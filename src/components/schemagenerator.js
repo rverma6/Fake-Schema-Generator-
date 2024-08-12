@@ -4,6 +4,7 @@ import axios from 'axios';
 function SchemaGenerator() {
     const [prompt, setPrompt] = useState('');
     const [sqlCode, setSqlCode] = useState('');
+    const [schemaId, setSchemaId] = useState(null);  // Capture schemaId here
     const [data, setData] = useState([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
@@ -11,11 +12,17 @@ function SchemaGenerator() {
 
     const handleGenerateSchema = async () => {
         setLoading(true);
+
+        // handle schema with only a create
         setError(null);
     
         try {
             const response = await axios.post('http://localhost:3001/api/generate-schema', { prompt });
             let sqlCode = response.data.sql_code;
+
+            // Capture the schemaId from the response
+            const schemaId = response.data.schema_id;
+            setSchemaId(schemaId);  // Save schemaId for later use
     
             // Remove markdown code block delimiters if present
             sqlCode = sqlCode.replace(/```sql/g, '').replace(/```/g, '').trim();
@@ -29,15 +36,14 @@ function SchemaGenerator() {
             setLoading(false);
         }
     };
-    
 
     const handleGenerateData = async () => {
         setLoading(true);
         setError(null);
 
         try {
-            console.log('Generating data with SQL Code:', sqlCode);
-            const response = await axios.post('http://localhost:3001/api/generate-data', { sqlCode, tableName: 'users' });
+            console.log('Generating data for schema ID:', schemaId);
+            const response = await axios.post('http://localhost:3001/api/generate-data', { schemaId });
             setData(response.data);
         } catch (error) {
             setError('Failed to generate data. Please try again.');
@@ -53,7 +59,7 @@ function SchemaGenerator() {
         try {
             console.log('Generating more data with SQL Code:', sqlCode, 'Additional Rows:', additionalRows);
             const response = await axios.post('http://localhost:3001/api/generate-more-data', {
-                sqlCode,
+                schemaId,  // Use schemaId to fetch the correct schema
                 additionalRows,
             });
             setData(prevData => [...prevData, ...response.data]); // Append new rows to existing data

@@ -1,145 +1,240 @@
+require('dotenv').config({ path: '../.env' });
 const { faker } = require('@faker-js/faker');
+const OpenAI = require('openai');
+
 const { Pool } = require('pg');
-require('dotenv').config();
+
+// to do - create caching for faster generation
 
 const pool = new Pool({
-    connectionString: process.env.DATABASE_URL, // Use your actual connection string
+    connectionString: process.env.DATABASE_URL,
 });
 
+const openai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+    organization: "org-Dxwr0ny8EWkm8hlzHhw2Njdl",
+    project: "proj_z6qXSriksXQfJ5WPbSxJ78x4",
+});
+
+
+// Function to retrieve the table schema and identify primary key columns
 const getTableSchema = async (tableName) => {
     const query = `
-        SELECT column_name, data_type
-        FROM information_schema.columns
+        SELECT
+            column_name, 
+            data_type,
+            character_maximum_length,
+            column_default,
+            is_nullable,
+            EXISTS (
+                SELECT 1 
+                FROM information_schema.table_constraints tc 
+                JOIN information_schema.constraint_column_usage ccu 
+                ON ccu.constraint_name = tc.constraint_name 
+                WHERE tc.table_name = $1 
+                AND tc.constraint_type = 'PRIMARY KEY'
+                AND ccu.column_name = columns.column_name
+            ) AS is_primary_key
+        FROM information_schema.columns AS columns
         WHERE table_name = $1;
     `;
 
     const result = await pool.query(query, [tableName]);
     return result.rows;
-        
 };
 
-const generateFakeData = async (tableName, rowCount = 100) => {
+// Function to get AI-generated script for handling specific columns
+const getAIScriptForColumn = async (column_name, data_type) => {
+    const prompt = `You are an expert in generating realistic data for databases. 
+    Please provide a concise JSON object that specifies how to generate realistic data for a column in a PostgreSQL database. 
+    The column is named "${column_name}" and has the data type "${data_type}".
+
+    The JSON should have the following structure:
+    {
+        "customFunction": "provide a JavaScript function that generates the data"
+    }
+
+    The custom function should use common sense and domain knowledge to create data that fits the likely context of the column.
+    Avoid unnecessary explanations or additional text, and focus on providing the custom function within the JSON object.`;
+
+
+    try {
+        const response = await openai.chat.completions.create({
+            model: 'gpt-4o',
+            messages: [
+                { role: 'user', content: prompt }
+            ],
+            max_tokens: 300,
+            temperature: 0,
+        });
+
+        const content = response.choices[0].message.content.trim();
+        console.log('AI suggestion for column:', column_name, '\n', content);
+
+        return content;
+
+    } catch (error) {
+        console.error('Error getting AI script for column:', error.message);
+        return null;
+    }
+};
+
+// Function to insert a single row of data into the table
+const insertSingleRow = async (tableName, rowData) => {
+    const columns = Object.keys(rowData).join(", ");
+    const values = Object.values(rowData);
+    const placeholders = values.map((_, idx) => `$${idx + 1}`).join(", ");
+
+    const sql = `
+        INSERT INTO ${tableName} (${columns})
+        VALUES (${placeholders});
+    `;
+
+    try {
+        await pool.query(sql, values);
+    } catch (error) {
+        console.error('Error inserting row:', error.message);
+        throw error;
+    }
+};
+
+const getFakerMethodForColumn = async (column_name, data_type) => {
+    let aiScript;
+
+    try {
+        // Handle specific cases
+        switch (data_type.toLowerCase()) {
+            case 'integer':
+            case 'int':
+            case 'bigint':
+                if (column_name.toLowerCase().includes('age')) return () => faker.number.int({ min: 1, max: 110 });
+                return () => faker.number.int({ min: 1, max: 1000000 }); // Adjust the range as needed
+
+            case 'float':
+            case 'decimal':
+            case 'numeric':
+                return () => faker.number.float({ min: 10, max: 1000, multipleOf: 0.01 }); // Adjust the range as needed
+
+            case 'location':
+                return () => faker.address.city() + ', ' + faker.address.state() + ', ' + faker.address.country();
+                
+            case 'character varying':
+            case 'varchar':
+            case 'text':
+                if (column_name.toLowerCase().includes('email')) return faker.internet.email;
+                if (column_name.toLowerCase().includes('url')) return faker.internet.url;
+                if (column_name.toLowerCase().includes('first_name')) return faker.person.firstName;
+                if (column_name.toLowerCase().includes('last_name')) return faker.person.lastName;
+                if (column_name.toLowerCase().includes('name')) return faker.person.fullName;
+
+                break; // Exit switch, go to the default AI case below
+
+            case 'date':
+                return () => faker.date.past().toISOString().split('T')[0];
+
+            case 'timestamp':
+            case 'timestamp without time zone':
+            case 'timestamptz':
+                return () => faker.date.recent().toISOString();
+
+            case 'boolean':
+                return faker.datatype.boolean;
+
+            case 'array':
+            case 'ARRAY':
+                return () => `{${faker.lorem.words(3).split(' ').join(',')}}`; // Example of converting to PostgreSQL array format
+
+            default:
+                break; // Exit switch, go to the AI case below
+        }
+
+        // If no specific method is found, call the AI API
+        console.log(`No specific faker method found for ${column_name} with data type ${data_type}. Using AI to generate a custom method.`);
+        aiScript = await getAIScriptForColumn(column_name, data_type);
+
+        // Extract the JSON part from the AI response
+        const jsonStart = aiScript.indexOf('{');
+        const jsonEnd = aiScript.lastIndexOf('}') + 1;
+        const jsonResponse = aiScript.slice(jsonStart, jsonEnd);
+
+        console.log(`Extracted JSON for ${column_name}:`, jsonResponse);
+
+        const parsedScript = JSON.parse(jsonResponse);
+        const { customFunction } = parsedScript;
+
+        if (customFunction) {
+            console.log(`Using custom function for ${column_name}: ${customFunction}`);
+            return new Function(`return ${customFunction}`)(); // Execute the custom function
+        }
+
+        // Fallback if no custom function is provided
+        console.log(`No custom function found for ${column_name}, defaulting to fallback.`);
+        return () => faker.lorem.word();
+
+    } catch (error) {
+        console.error(`Error determining faker method for ${column_name}:`, error.message);
+        return () => faker.lorem.word(); // Fallback method
+    }
+};
+
+
+
+
+const generateFakeData = async (tableName, rowCount = 10) => {
     try {
         const schema = await getTableSchema(tableName);
+        const primaryKeyColumns = schema.filter(column => column.is_primary_key).map(column => column.column_name);
+        const generatedKeys = {}; // To track generated keys and ensure uniqueness
 
         for (let i = 0; i < rowCount; i++) {
             const rowData = {};
 
-            schema.forEach(column => {
-                let { column_name, data_type } = column;
-
-                data_type = data_type.toLowerCase();
-
-                console.log(`Generating data for column: ${column_name} with type: ${data_type}`);
-
-                if (column_name === 'id') return; 
-
+            for (const column of schema) {
+                let { column_name, data_type, character_maximum_length } = column;
                 let value;
 
-                try {
-                    switch (data_type) {
-                        case 'integer':
-                        case 'int':
-                        case 'bigint':
-                            value = faker.number.int({ min: 1, max: 1000 });
-                            break;
+                if (primaryKeyColumns.includes(column_name)) {
+                    // Ensure unique value for primary key
+                    do {
+                        value = faker.number.int({ min: 1, max: 1000000 });
+                    } while (generatedKeys[column_name]?.has(value));
 
-                        case 'text':
-                        case 'varchar':
-                        case 'character varying':
-                            value = faker.lorem.words(3);
-                            break;
-                        
-                        case 'float':
-                        case 'decimal':
-                        case 'numeric':
-                            value = faker.finance.amount({min: 1, max: 1000, dec: 2});
-                            break;
-
-                        case 'timestamp':
-                        case 'timestamptz':
-                            value = faker.date.recent().toISOString(); // Generates a recent timestamp
-                            break;
-
-                        case 'boolean':
-                            value = faker.datatype.boolean();
-                            break;
-
-                        default:
-                            console.warn(`Unhandled or undefined data type: ${data_type} for column: ${column_name}`);
-                            value = null;
+                    if (!generatedKeys[column_name]) {
+                        generatedKeys[column_name] = new Set();
                     }
+                    generatedKeys[column_name].add(value);
+                } else {
+                    try {
+                        const fakerMethod = await getFakerMethodForColumn(column_name, data_type);
+                        value = fakerMethod();
 
-                    // Handle null values with defaults
-                    if (value === null) {
-                        switch (data_type) {
-                            case 'integer':
-                            case 'int':
-                            case 'bigint':
-                                value = 0; // Default integer value
-                                break;
-
-                            case 'text':
-                            case 'varchar':
-                            case 'character varying':
-                                value = 'default'; // Default text value
-                                break;
-                            
-                            case 'float':
-                            case 'decimal':
-                            case 'numeric':
-                                value = 0.0; // Default decimal value
-                                break;
-
-                            case 'timestamp':
-                            case 'timestamptz':
-                                value = new Date().toISOString(); // Default to current timestamp
-                                break;
-
-                            case 'boolean':
-                                value = false; // Default boolean value
-                                break;
-
-                            default:
-                                value = new Date().toISOString(); // Use current timestamp for any unhandled type
+                        if (typeof value === 'string' && character_maximum_length && value.length > character_maximum_length) {
+                            value = value.substring(0, character_maximum_length);
                         }
+
+                        // Handle array fields if necessary
+                        if (Array.isArray(value) && data_type === 'ARRAY') {
+                            value = `{${value.join(',')}}`; // Convert to PostgreSQL array format
+                        }
+                    } catch (err) {
+                        console.error(`Error generating data for column: ${column_name}. Falling back to default faker method.`, err.message);
+                        value = faker.lorem.word(); // Fallback to a default method
                     }
-
-                    rowData[column_name] = value;
-
-                } catch (typeError) {
-                    console.error(`Error generating data for column: ${column_name} with type: ${data_type}`, typeError.message);
-                    rowData[column_name] = null; // Fallback to null if an error occurs
                 }
-            });
 
-            const columns = Object.keys(rowData).join(", ");
-            const values = Object.values(rowData);
-            const placeholders = values.map((_, idx) => `$${idx + 1}`).join(", ");
-
-            const sql = `
-                INSERT INTO ${tableName} (${columns})
-                VALUES (${placeholders});
-            `;
-
-            console.log('Generated SQL:', sql);
-            console.log('With values:', values);
-
-            try {
-                await pool.query(sql, values);
-            } catch (dbError) {
-                console.error('Error executing SQL:', dbError.message);
-                console.error('Generated SQL Statement:', sql);
-                console.error('With values:', values);
-                throw dbError; // Re-throw error to handle it in the calling context
+                rowData[column_name] = value;
             }
+
+            console.log(`Generated row:`, rowData);
+            await insertSingleRow(tableName, rowData);
         }
 
-        console.log(`Inserted ${rowCount} rows of fake data into ${tableName}`)
+        console.log(`Generated ${rowCount} rows of fake data for ${tableName}`);
     } catch (err) {
         console.log('Error generating fake data:', err.message);
         throw err;
     }
 };
+    
 
-module.exports = { generateFakeData, getTableSchema };
+module.exports = { generateFakeData, getTableSchema, getAIScriptForColumn };

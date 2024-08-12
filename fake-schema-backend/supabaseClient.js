@@ -1,7 +1,9 @@
 // Import the necessary modules
+require('dotenv').config({ path: '../.env' });
 const { createClient } = require('@supabase/supabase-js');
-require('dotenv').config();
 
+console.log('Using Supabase URL:', process.env.REACT_APP_SUPABASE_URL); // Add this line
+console.log('Using DATABASE_URL:', process.env.DATABASE_URL);
 // Initialize Supabase client using environment variables
 const supabaseUrl = process.env.REACT_APP_SUPABASE_URL;
 const supabaseKey = process.env.REACT_APP_ANON_KEY;

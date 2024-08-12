@@ -4,6 +4,7 @@ const express = require('express');
 const { executeSQL } = require('./services/executeSQL'); 
 const OpenAI = require('openai');
 const supabase = require('./supabaseClient');
+const redisClient = require('./redisClient'); // Import the Redis client setup
 const cors = require('cors');
 const { generateFakeData } = require('./services/generateFakeData');
 const { extractTableName } = require('./services/executeSQL');
@@ -19,7 +20,6 @@ const openai = new OpenAI({
     organization: "org-Dxwr0ny8EWkm8hlzHhw2Njdl",
     project: "proj_z6qXSriksXQfJ5WPbSxJ78x4",
 });
-
 
 
 
@@ -105,7 +105,7 @@ app.post('/api/generate-data', async (req, res) => {
 
         // Generate fake data for the newly created table
         console.log(`Generating fake data for table: ${tableName}`);
-        await generateFakeData(tableName, 3); // Adjust the number of rows as needed
+        await generateFakeData(tableName, 100); // Adjust the number of rows as needed
 
         res.json({ message: 'Table created and fake data generated successfully', tableName });
     } catch (error) {
@@ -160,7 +160,26 @@ app.get('/api/users', async (req, res) => {
 
 
 
-// Other endpoints...
-app.listen(port, () => {
+
+// Start the Express server and save the server instance
+const server = app.listen(port, () => {
     console.log(`Backend server is running on http://localhost:${port}`);
+});
+
+// Handle SIGINT (Ctrl+C) for graceful shutdown
+process.on('SIGINT', async () => {
+    try {
+        // Gracefully close Redis connection
+        await redisClient.quit();
+        console.log('Redis client disconnected');
+
+        // Close the Express server
+        server.close(() => {
+            console.log('Express server closed');
+            process.exit(0);
+        });
+    } catch (err) {
+        console.error('Error during shutdown:', err);
+        process.exit(1);
+    }
 });

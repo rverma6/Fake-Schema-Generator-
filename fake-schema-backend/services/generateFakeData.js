@@ -1,6 +1,8 @@
 require('dotenv').config({ path: '../.env' });
 const { faker } = require('@faker-js/faker');
 const OpenAI = require('openai');
+const redisClient = require('../redisClient');
+
 
 const { Pool } = require('pg');
 
@@ -19,6 +21,17 @@ const openai = new OpenAI({
 
 // Function to retrieve the table schema and identify primary key columns
 const getTableSchema = async (tableName) => {
+
+    const cacheKey = `tableschema:${tableName}`;
+    try {
+        // Check if schema is cached
+        const cachedSchema = await redisClient.get(cacheKey);
+        if (cachedSchema) {
+            console.log(`Cache hit for table schema: ${tableName}`);
+            return JSON.parse(cachedSchema);
+        }
+
+
     const query = `
         SELECT
             column_name, 
@@ -40,25 +53,42 @@ const getTableSchema = async (tableName) => {
     `;
 
     const result = await pool.query(query, [tableName]);
-    return result.rows;
+
+    await redisClient.set(cacheKey, JSON.stringify(result.rows), { EX: 3600 }); // Cache for 1 hour
+        return result.rows;
+
+    } catch (error) {
+        console.error('Error getting table schema:', error.message);
+        throw error;
+    }
 };
 
 // Function to get AI-generated script for handling specific columns
 const getAIScriptForColumn = async (column_name, data_type) => {
-    const prompt = `You are an expert in generating realistic data for databases. 
-    Please provide a concise JSON object that specifies how to generate realistic data for a column in a PostgreSQL database. 
-    The column is named "${column_name}" and has the data type "${data_type}".
 
-    The JSON should have the following structure:
-    {
-        "customFunction": "provide a JavaScript function that generates the data"
-    }
-
-    The custom function should use common sense and domain knowledge to create data that fits the likely context of the column.
-    Avoid unnecessary explanations or additional text, and focus on providing the custom function within the JSON object.`;
-
-
+    const cacheKey = `aiscript:${column_name}:${data_type}`;
     try {
+        // Check if the script is already cached in Redis
+        const cachedScript = await redisClient.get(cacheKey);
+        if (cachedScript) {
+            console.log(`Cache hit for AI script: ${cacheKey}`);
+            return cachedScript;
+        }
+
+    
+        const prompt = `You are an expert in generating realistic data for databases. 
+        Please provide a concise JSON object that specifies how to generate realistic data for a column in a PostgreSQL database. 
+        The column is named "${column_name}" and has the data type "${data_type}".
+
+        The JSON should have the following structure:
+        {
+            "customFunction": "provide a JavaScript function that generates the data"
+        }
+
+        The custom function should use common sense and domain knowledge to create data that fits the likely context of the column.
+        Avoid unnecessary explanations or additional text, and focus on providing the custom function within the JSON object.`;
+
+
         const response = await openai.chat.completions.create({
             model: 'gpt-4o',
             messages: [
@@ -70,6 +100,8 @@ const getAIScriptForColumn = async (column_name, data_type) => {
 
         const content = response.choices[0].message.content.trim();
         console.log('AI suggestion for column:', column_name, '\n', content);
+
+        await redisClient.set(cacheKey, content, { EX: 3600 }); // Cache for 1 hour
 
         return content;
 
@@ -115,8 +147,6 @@ const getFakerMethodForColumn = async (column_name, data_type) => {
             case 'numeric':
                 return () => faker.number.float({ min: 10, max: 1000, multipleOf: 0.01 }); // Adjust the range as needed
 
-            case 'location':
-                return () => faker.address.city() + ', ' + faker.address.state() + ', ' + faker.address.country();
                 
             case 'character varying':
             case 'varchar':

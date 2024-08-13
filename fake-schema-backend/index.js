@@ -8,6 +8,7 @@ const redisClient = require('./redisClient'); // Import the Redis client setup
 const cors = require('cors');
 const { generateFakeData } = require('./services/generateFakeData');
 const { extractTableName } = require('./services/executeSQL');
+const { getForeignKeyData } = require('./services/generateFakeData');
 
 const app = express();
 const port = 3001;
@@ -33,7 +34,9 @@ app.post('/api/generate-schema', async (req, res) => {
             messages: [
                 { role: 'system', content: 'You are a PostgreSQL expert.' },
                 {
-                    role: 'user', content: `Generate a clean PostgreSQL CREATE TABLE statement. Do not include any explanations, only the SQL code. The table should be for the following structure: ${prompt}.`
+                    role: 'user', content: `Generate a clean PostgreSQL CREATE TABLE statement. Do not include any explanations, 
+                    and ensure that the code only contains the CREATE TABLE statement without any CREATE SCHEMA or other additional statements. 
+                    The table should be for the following structure: ${prompt}.`
                 }
             ],
             max_tokens: 500,
@@ -42,10 +45,10 @@ app.post('/api/generate-schema', async (req, res) => {
 
         let sqlCode = response.choices[0].message.content.trim();
 
-        // Remove markdown code block delimiters
         sqlCode = sqlCode.replace(/```sql/g, '').replace(/```/g, '').trim();
+
+
         
-        console.log('Generated SQL Code:', sqlCode);
 
         // Extract the table name from the SQL code
         const tableName = extractTableName(sqlCode);
@@ -105,9 +108,14 @@ app.post('/api/generate-data', async (req, res) => {
 
         // Generate fake data for the newly created table
         console.log(`Generating fake data for table: ${tableName}`);
-        await generateFakeData(tableName, 100); // Adjust the number of rows as needed
+        const generatedData = await generateFakeData(tableName, 3); // Adjust the number of rows as needed
 
-        res.json({ message: 'Table created and fake data generated successfully', tableName });
+        // Return the generated data along with the success message
+        res.json({
+            message: 'Table created and fake data generated successfully',
+            tableName,
+            data: generatedData // Include the generated data in the response
+        });
     } catch (error) {
         console.error('Error in generate-data endpoint:', error.message);
         res.status(500).json({ error: 'Failed to generate data. Please try again.' });
@@ -115,30 +123,121 @@ app.post('/api/generate-data', async (req, res) => {
 });
 
 
+
 app.post('/api/generate-more-data', async (req, res) => {
-    const { additionalRows } = req.body;
+    const { schemaId, additionalRows } = req.body;
 
     try {
-        const fakeData = [];
-        for (let i = 1; i <= additionalRows; i++) {
-            fakeData.push({ username: `TestUser${Date.now()}_${i}` }); // Unique username to avoid conflicts
+        // Retrieve the SQL code using the schema ID
+        console.log(`Attempting to retrieve schema with ID: ${schemaId}`);
+        const { data, error } = await supabase.from('schemas').select('sql_code').eq('id', schemaId).single();
+
+        if (error || !data) {
+            console.error('Schema not found:', error);
+            return res.status(404).json({ error: 'Schema not found. Please provide a valid schema ID.' });
         }
 
-        const insertData = await supabase
-            .from('users')
-            .insert(fakeData);
+        const sqlCode = data.sql_code;
 
-        if (insertData.error) {
-            throw insertData.error;
+        // Extract the table name from the SQL code
+        const tableName = extractTableName(sqlCode);
+        console.log('Extracted Table Name:', tableName);
+
+        if (!tableName) {
+            return res.status(500).json({ error: 'Failed to extract table name from SQL code.' });
         }
 
-        res.json(fakeData);
+        // Generate additional fake data for the existing table
+        console.log(`Generating ${additionalRows} more rows of fake data for table: ${tableName}`);
+        const additionalData = await generateFakeData(tableName, additionalRows); // Generate the specified number of rows
+
+        // Return the generated data
+        res.json({
+            message: `${additionalRows} rows of fake data generated successfully`,
+            tableName,
+            data: additionalData // Include the additional generated data in the response
+        });
     } catch (error) {
-        console.error('Error generating additional data:', error);
+        console.error('Error in generate-more-data endpoint:', error.message);
         res.status(500).json({ error: 'Failed to generate additional data. Please try again.' });
     }
 });
 
+
+app.post('/api/generate-data-with-foreign-keys', async (req, res) => {
+    const { schemaId, foreignKeySourceTable, foreignKeyColumn } = req.body;
+
+    try {
+
+    
+
+        // Retrieve the SQL code using the schema ID
+        const { data, error } = await supabase.from('schemas').select('sql_code').eq('id', schemaId).single();
+
+        if (error || !data) {
+            return res.status(404).json({ error: 'Schema not found. Please provide a valid schema ID.' });
+        }
+
+        const sqlCode = data.sql_code;
+
+        // Extract the table name from the SQL code
+        const tableName = extractTableName(sqlCode);
+        console.log('Extracted Table Name:', tableName);
+
+        // Execute the SQL code to create the table
+        await executeSQL(sqlCode);
+
+        // Retrieve foreign key data from the source table
+        const foreignKeyData = {};
+        console.log(`source table: ${foreignKeySourceTable} with foreignKeyCol: ${foreignKeyColumn}`);
+        if (foreignKeySourceTable && foreignKeyColumn) {
+
+            const foreignKeyValues = await getForeignKeyData(foreignKeySourceTable, foreignKeyColumn);
+
+            foreignKeyData[foreignKeyColumn] = { 
+                tableName: foreignKeySourceTable, 
+                columnName: foreignKeyColumn, 
+                values: foreignKeyValues 
+            };
+
+            console.log('Foreign key data:', foreignKeyData);
+            console.log('Foreign key values:', foreignKeyValues);
+
+        }
+        console.log(`Calling generateFakeData with tableName: ${tableName}, rowCount: 3, foreignKeyData:`, foreignKeyData);
+        // Generate fake data for the newly created table, using foreign key data
+        await generateFakeData(tableName, 3, foreignKeyData); 
+
+        res.json({ message: 'Table created and fake data generated successfully', tableName });
+    } catch (error) {
+        console.error('Error generating data with foreign keys:', error.message);
+        res.status(500).json({ error: 'Failed to generate data. Please try again.' });
+    }
+});
+
+// Endpoint to update a record in a specific table
+app.post('/api/update-record', async (req, res) => {
+    const { tableName, columnName, newValue, id } = req.body;
+
+    try {
+        // Update the record in the specified table
+        const { data, error } = await supabase
+            .from(tableName)
+            .update({ [columnName]: newValue })
+            .eq('id', id);
+
+        if (error) {
+            console.error('Error updating data:', error.message);
+            return res.status(500).json({ error: 'Failed to update data. Please try again.' });
+        }
+
+        console.log('Data updated successfully:', data);
+        res.json({ message: 'Data updated successfully', data });
+    } catch (error) {
+        console.error('Error updating record:', error.message);
+        res.status(500).json({ error: 'Failed to update record. Please try again.' });
+    }
+});
 
 
 app.get('/api/users', async (req, res) => {

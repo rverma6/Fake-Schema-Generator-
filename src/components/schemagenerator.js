@@ -89,6 +89,12 @@ function SchemaGenerator() {
         }
         return foreignKeys;
     };
+
+    const updateColumnNames = (sqlCode) => {
+        const columns = Array.from(sqlCode.matchAll(/^\s*(\w+)\s+\w+/gm)).map(match => match[1]);
+        setColumnNames(columns);
+    };
+    
     
     
 
@@ -110,8 +116,7 @@ function SchemaGenerator() {
             console.log('Generated SQL Code:', sqlCode);
             setSqlCode(sqlCode);
     
-            const columns = Array.from(sqlCode.matchAll(/^\s*(\w+)\s+\w+/gm)).map(match => match[1]);
-            setColumnNames(columns);
+            updateColumnNames(sqlCode);
     
             const detectedForeignKeys = extractForeignKeyInfo(sqlCode);
             console.log('Foreign Keys Detected:', detectedForeignKeys); // Logging detected foreign keys
@@ -146,11 +151,8 @@ function SchemaGenerator() {
             let updatedSqlCode = sqlCode;
             let mapping = {};
     
-            if (operationType === 'foreignKey') {
-                mapping[oldColumn] = { foreignKeySourceTable, foreignKeyColumn };
-    
                 // No SQL code update needed as the foreign key is already part of the schema
-            } else if (operationType === 'rename') {
+             if (operationType === 'rename') {
                 mapping[oldColumn] = newColumn;
     
                 updatedSqlCode = sqlCode.replace(
@@ -169,6 +171,7 @@ function SchemaGenerator() {
                 newSqlCode: updatedSqlCode,
                 columnMapping: mapping,
             });
+
     
             if (response.status === 200) {
                 alert('Schema updated successfully.');
@@ -177,15 +180,20 @@ function SchemaGenerator() {
     
                 setSqlCode(sql_code);
                 setTableName(table_name);
-    
-                const updatedDataResponse = await axios.post('http://localhost:3001/api/generate-data-with-foreign-keys', {
-                    schemaId,
-                    foreignKeySourceTable,
-                    foreignKeyColumn,
-                });
-                setData(updatedDataResponse.data.data);
+
+                if (foreignKeyDetails.length > 0) {
+                    const foreignKeyInfo = foreignKeyDetails[0];
+                    const updatedDataResponse = await axios.post('http://localhost:3001/api/generate-data-with-foreign-keys', {
+                        schemaId,
+                        foreignKeySourceTable: foreignKeyInfo.sourceTable,
+                        foreignKeyColumn: foreignKeyInfo.columnName,
+                    });
+                    setData(updatedDataResponse.data.data);
+                } 
+                
             } else {
-                throw new Error('Failed to update schema.');
+                    throw new Error('Failed to update schema.');
+                
             }
     
             setOperationType('');
@@ -207,6 +215,8 @@ function SchemaGenerator() {
             const foreignKeyInfo = foreignKeyDetails.length > 0 ? foreignKeyDetails[0] : null;
             console.log('Foreign Key Info:', foreignKeyInfo);
 
+            let finalizedSqlCode = sqlCode;
+
 
             let response;
             if (foreignKeyInfo) {
@@ -216,7 +226,10 @@ function SchemaGenerator() {
                     foreignKeyColumn: foreignKeyInfo.columnName,
                 });
             } else {
-                response = await axios.post('http://localhost:3001/api/generate-data', { schemaId });
+                response = await axios.post('http://localhost:3001/api/generate-data', { 
+                    schemaId, 
+                    sqlCode: finalizedSqlCode,
+                });
             }
 
             console.log('Response data:', response.data);
@@ -304,7 +317,10 @@ function SchemaGenerator() {
                     <textarea
                         ref={textareaRef}
                         value={sqlCode}
-                        onChange={(e) => setSqlCode(e.target.value)}
+                        onChange={(e) => {
+                            setSqlCode(e.target.value);
+                            updateColumnNames(e.target.value); // Update column names dynamically
+                        }}
                         rows="10"
                         cols="80"
                         className="form-control"
@@ -394,30 +410,7 @@ function SchemaGenerator() {
                                 disabled={loading}
                             >
                                 {loading ? 'Saving...' : 'Save Changes'}
-                            </button>
-
-                            {/* Foreign key section */}
-                            <div className="mt-3">
-                                <label htmlFor="foreignKeySourceTable">Foreign Key Source Table:</label>
-                                <input
-                                    type="text"
-                                    className="form-control"
-                                    id="foreignKeySourceTable"
-                                    value={foreignKeySourceTable}
-                                    onChange={(e) => setForeignKeySourceTable(e.target.value)}
-                                    placeholder="Enter source table name"
-                                />
-
-                                <label htmlFor="foreignKeyColumn" className="mt-3">Foreign Key Column:</label>
-                                <input
-                                    type="text"
-                                    className="form-control"
-                                    id="foreignKeyColumn"
-                                    value={foreignKeyColumn}
-                                    onChange={(e) => setForeignKeyColumn(e.target.value)}
-                                    placeholder="Enter column name in the source table"
-                                />
-                            </div>
+                            </button>                            
                         </>
                     )}
                 </div>

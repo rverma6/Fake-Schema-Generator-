@@ -111,19 +111,14 @@ app.put('/api/update-schema', async (req, res) => {
 
 // Endpoint to generate fake data based on the SQL schema
 app.post('/api/generate-data', async (req, res) => {
-    const { schemaId } = req.body;
+    const { schemaId, sqlCode } = req.body; // Accept the sqlCode directly from the request body
 
     try {
-        // Retrieve the SQL code using the schema ID
-        console.log(`Attempting to retrieve schema with ID: ${schemaId}`);
-        const { data, error } = await supabase.from('schemas').select('sql_code').eq('id', schemaId).single();
-
-        if (error || !data) {
-            console.error('Schema not found:', error);
-            return res.status(404).json({ error: 'Schema not found. Please provide a valid schema ID.' });
+        if (!sqlCode) {
+            return res.status(400).json({ error: 'SQL code is required.' });
         }
 
-        const sqlCode = data.sql_code;
+        console.log(`Received SQL Code: ${sqlCode}`);
 
         // Extract the table name from the SQL code
         const tableName = extractTableName(sqlCode);
@@ -151,6 +146,7 @@ app.post('/api/generate-data', async (req, res) => {
         res.status(500).json({ error: 'Failed to generate data. Please try again.' });
     }
 });
+
 
 
 app.post('/api/generate-more-data', async (req, res) => {
@@ -222,6 +218,9 @@ app.post('/api/generate-data-with-foreign-keys', async (req, res) => {
 
         const sqlCode = data.sql_code;
 
+        console.log(`Received SQL Code: ${sqlCode}`);
+
+
         // Extract the table name from the SQL code
         const tableName = extractTableName(sqlCode);
         console.log('Extracted Table Name:', tableName);
@@ -289,7 +288,7 @@ app.put('/api/update-schema', async (req, res) => {
     console.log('Starting update-schema endpoint...'); // Debug log
 
     const { schemaId, newSqlCode, columnMapping } = req.body;
-    
+
     try {
         // Fetch the existing schema
         const { data: existingSchema, error: fetchError } = await supabase
@@ -304,46 +303,72 @@ app.put('/api/update-schema', async (req, res) => {
         console.log('Old SQL Code:', oldSqlCode); // Debug log
 
         const tableName = extractTableName(oldSqlCode);
+        console.log('Extracted table name:', tableName); // Debug log
 
-        // Validate new schema against the existing one
-        const isValid = validateSchemaUpdate(newSqlCode, oldSqlCode);
-        if (!isValid) {
-            return res.status(400).json({ error: 'Schema update is invalid. Please review your changes.' });
+        // Correct way to check if the table exists
+        const { data: tableExists, error: tableCheckError } = await supabase
+            .rpc('table_exists', { p_table_name: tableName }); // Custom Supabase RPC for table existence check
+
+        if (tableCheckError) {
+            console.error(`Error checking if table ${tableName} exists:`, tableCheckError);
+            throw new Error(`Error checking if table ${tableName} exists.`);
         }
-        // Backup existing data before making any changes
-        const backupData = await backupTableData(tableName);
 
-        // Invalidate the cache for this table schema
-        await redisClient.del(`tableschema:${tableName}`);
-        console.log(`Cache first time invalidated for table schema: ${tableName}`); 
+        if (!tableExists) {
+            console.log(`Table ${tableName} does not exist. Skipping backup and migration.`);
 
-        // Update the schema in the database
-        const { error: updateError } = await supabase
-            .from('schemas')
-            .update({ sql_code: newSqlCode })
-            .eq('id', schemaId);
+            // Update the schema in the database
+            const { error: updateError } = await supabase
+                .from('schemas')
+                .update({ sql_code: newSqlCode })
+                .eq('id', schemaId);
 
-        // Migrate existing data to fit the new schema
-        await migrateData(oldSqlCode, newSqlCode, tableName, columnMapping);
+            if (updateError) throw new Error('Failed to update schema');
 
-        if (updateError) throw new Error('Failed to update schema');
+            res.status(200).json({
+                message: 'Schema updated successfully (table does not exist yet).',
+                sql_code: newSqlCode,
+                table_name: tableName
+            });
+        } else {
+            console.log(`Table ${tableName} exists. Proceeding with backup and migration.`);
 
-        // Invalidate the cache for this table schema
-        await redisClient.del(`tableschema:${tableName}`);
-        console.log(`Cache second time invalidated for table schema: ${tableName}`); 
+            // Backup existing data before making any changes
+            const backupData = await backupTableData(tableName);
+            console.log(`Backup completed for table ${tableName}:`, backupData.length ? `${backupData.length} rows` : 'No data to backup.');
 
-        // Fetch the updated schema after the update
-        const { data: updatedSchema } = await supabase
-            .from('schemas')
-            .select('sql_code')
-            .eq('id', schemaId)
-            .single();
+            // Invalidate the cache for this table schema
+            await redisClient.del(`tableschema:${tableName}`);
+            console.log(`Cache invalidated for table schema: ${tableName}`);
 
-        res.status(200).json({ 
-            message: 'Schema updated and data migrated successfully.', 
-            sql_code: updatedSchema.sql_code, 
-            table_name: tableName 
-        });
+            // Update the schema in the database
+            const { error: updateError } = await supabase
+                .from('schemas')
+                .update({ sql_code: newSqlCode })
+                .eq('id', schemaId);
+
+            if (updateError) throw new Error('Failed to update schema');
+
+            // Migrate existing data to fit the new schema
+            await migrateData(oldSqlCode, newSqlCode, tableName, columnMapping);
+
+            // Invalidate the cache again if necessary
+            await redisClient.del(`tableschema:${tableName}`);
+            console.log(`Cache invalidated again for table schema: ${tableName}`);
+
+            // Fetch the updated schema after the update
+            const { data: updatedSchema } = await supabase
+                .from('schemas')
+                .select('sql_code')
+                .eq('id', schemaId)
+                .single();
+
+            res.status(200).json({
+                message: 'Schema updated and data migrated successfully.',
+                sql_code: updatedSchema.sql_code,
+                table_name: tableName
+            });
+        }
     } catch (error) {
         console.error('Error during schema update:', error.message);
         res.status(500).json({ error: 'Failed to update schema. Please try again.' });

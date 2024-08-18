@@ -61,19 +61,34 @@ const validateSchemaUpdate = (newSchemaSQL, existingSchemaSQL) => {
 
 
 const backupTableData = async (tableName) => {
-    // Fetch existing data from the table
-    const { data, error } = await supabase
-        .from(tableName)
-        .select('*');
-    
-    if (error) {
-        throw new Error('Failed to backup data.');
-    }
+    try {
+        // Fetch existing data from the table
+        const { data, error } = await supabase
+            .from(tableName)
+            .select('*');
 
-    // Store backup data in another table or a file
-    // This could involve saving to a separate table like `${tableName}_backup`
-    return data;
+        if (error) {
+            console.error(`Supabase error while backing up data from table ${tableName}:`, error);
+            throw new Error(`Failed to backup data from table ${tableName}.`);
+        }
+
+        // If there's no data in the table, log this and return an empty array
+        if (!data || data.length === 0) {
+            console.log(`No data found in table ${tableName}. Backup not required.`);
+            return [];
+        }
+
+        // Log the retrieved data (optional, for debugging)
+        console.log(`Backup data from table ${tableName}:`, data);
+
+        // Return the data to indicate it was backed up
+        return data;
+    } catch (error) {
+        console.error(`Error during backupTableData for table ${tableName}:`, error.message);
+        throw error;
+    }
 };
+
 
 const migrateData = async (oldSchemaSQL, newSqlCode, tableName, columnMapping) => {
     const parseColumns = (sql) => {

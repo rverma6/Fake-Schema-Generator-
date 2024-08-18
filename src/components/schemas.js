@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
+import { extractTableName } from '../../fake-schema-backend/services/executeSQL';
 
 function Schemas() {
     const [schemas, setSchemas] = useState([]);
@@ -21,6 +22,7 @@ function Schemas() {
         fetchSchemas();
     }, []);
 
+
     if (loading) return <p>Loading...</p>;
     if (error) return <p>Error fetching schemas: {error.message}</p>;
 
@@ -39,4 +41,4 @@ function Schemas() {
     );
 }
 
-export default Schemas;
+export default { Schemas } ;

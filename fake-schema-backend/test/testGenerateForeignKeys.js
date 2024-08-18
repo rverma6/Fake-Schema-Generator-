@@ -1,30 +1,37 @@
 require('dotenv').config({ path: '../.env' });
-
 const { Pool } = require('pg');
+const { faker } = require('@faker-js/faker');
 
+// Import the functions from your module
+const { generateFakeData, getForeignKeyData } = require('../services/generateFakeData');
+
+// Initialize PostgreSQL pool
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
 });
 
-(async () => {
+// Function to test the data generation and insertion
+const testDataGeneration = async () => {
     try {
-        // Fetch parent_ids from parent_table
-        const parentIds = await pool.query('SELECT parent_id FROM parent_table');
-        console.log('Parent IDs:', parentIds.rows);
+        // Define the foreign key data based on your table structure
+        const foreignKeyData = {
+            // This should match the actual foreign key column in your schema
+            testing_author_has_id: {
+                tableName: 'bakers',
+                columnName: 'baker_id',
+                values: await getForeignKeyData('bakers', 'baker_id')
+            }
+        };
 
-        // Use these parent_ids to insert data into child_table
-        for (let i = 0; i < parentIds.rows.length; i++) {
-            const parentId = parentIds.rows[i].parent_id;
-            const description = `Child ${i + 1} of Parent ${parentId}`;
-            await pool.query('INSERT INTO child_table (parent_id, description) VALUES ($1, $2)', [parentId, description]);
-        }
+        console.log('Foreign key data for testing:', foreignKeyData);
 
-        // Verify the insertion
-        const result = await pool.query('SELECT * FROM child_table');
-        console.log('Child Table Data:', result.rows);
+        // Generate and insert fake data into your target table
+        await generateFakeData('cakes', 1, foreignKeyData);
+
     } catch (error) {
-        console.error('Error:', error.message);
-    } finally {
-        await pool.end();
+        console.error('Error during test:', error.message);
     }
-})();
+};
+
+// Call the test function
+testDataGeneration();

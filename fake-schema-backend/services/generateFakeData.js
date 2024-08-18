@@ -34,11 +34,11 @@ const getTableSchema = async (tableName) => {
 
         const query = `
             SELECT
-                column_name, 
-                data_type,
-                character_maximum_length,
-                column_default,
-                is_nullable,
+                columns.column_name, 
+                columns.data_type,
+                columns.character_maximum_length,
+                columns.column_default,
+                columns.is_nullable,
                 EXISTS (
                     SELECT 1 
                     FROM information_schema.table_constraints tc 
@@ -47,10 +47,36 @@ const getTableSchema = async (tableName) => {
                     WHERE tc.table_name = $1 
                     AND tc.constraint_type = 'PRIMARY KEY'
                     AND ccu.column_name = columns.column_name
-                ) AS is_primary_key
-            FROM information_schema.columns AS columns
-            WHERE table_name = $1;
-        `;
+                ) AS is_primary_key,
+                EXISTS (
+                    SELECT 1
+                    FROM information_schema.table_constraints tc 
+                    JOIN information_schema.key_column_usage kcu
+                    ON tc.constraint_name = kcu.constraint_name
+                    WHERE tc.table_name = $1
+                    AND tc.constraint_type = 'FOREIGN KEY'
+                    AND kcu.column_name = columns.column_name
+                ) AS is_foreign_key,
+                (SELECT ccu.table_name
+                FROM information_schema.table_constraints tc 
+                JOIN information_schema.constraint_column_usage ccu
+                ON ccu.constraint_name = tc.constraint_name
+                WHERE tc.table_name = $1
+                AND tc.constraint_type = 'FOREIGN KEY'
+                AND ccu.column_name = columns.column_name) AS foreign_table_name,
+                (SELECT ccu.column_name
+                FROM information_schema.table_constraints tc 
+                JOIN information_schema.constraint_column_usage ccu
+                ON ccu.constraint_name = tc.constraint_name
+                WHERE tc.table_name = $1
+                AND tc.constraint_type = 'FOREIGN KEY'
+                AND ccu.column_name = columns.column_name) AS foreign_column_name
+            FROM 
+                information_schema.columns AS columns
+            WHERE 
+                columns.table_name = $1;
+
+`
         console.log(`Specified query is: ${query} with table name: ${tableName}`);
         const result = await pool.query(query, [tableName]);
 
@@ -152,19 +178,35 @@ const getAIScriptForColumn = async (table_name, column_name, data_type) => {
 };
 
 // Get the appropriate Faker method or AI-generated script for a column
-const getFakerMethodForColumn = async (column_name, data_type, table_name) => {
+const getFakerMethodForColumn = async (column_name, data_type, table_name, foreignKeyData) => {
+
     console.log(`getFakerMethodForColumn called with column: ${column_name}, data type: ${data_type}, table: ${table_name}`);
+    console.log(`ForeignKeyData received: ${JSON.stringify(foreignKeyData, null, 2)}`);
+    console.log(`Checking if foreignKeyData contains a match for column: ${column_name}`);
+
+    // Iterate over foreignKeyData to find the correct mapping
+    for (const [sourceColumnName, foreignKeyInfo] of Object.entries(foreignKeyData)) {
+        if (foreignKeyInfo.columnName === column_name) {
+            console.log(`Foreign key match found! ${column_name} references ${sourceColumnName} in ${foreignKeyInfo.tableName}`);
+            return () => faker.helpers.arrayElement(foreignKeyInfo.values);
+        } else if (column_name === sourceColumnName) {
+            console.log(`Foreign key match found for ${column_name} in ${foreignKeyInfo.tableName}`);
+            return () => faker.helpers.arrayElement(foreignKeyInfo.values);
+        }
+    }
+    
 
     let aiScript;
 
     try {
+        // update needs to handle when there is preexisting data
         // Handle specific cases
         switch (data_type.toLowerCase()) {
             case 'integer':
             case 'int':
             case 'bigint':
                 if (column_name.toLowerCase().includes('age')) return () => faker.number.int({ min: 1, max: 110 });
-                return () => faker.number.int({ min: 1, max: 1000000 }); // Adjust the range as needed
+                break;
 
             case 'float':
             case 'decimal':
@@ -178,7 +220,6 @@ const getFakerMethodForColumn = async (column_name, data_type, table_name) => {
                 if (column_name.toLowerCase().includes('url')) return faker.internet.url;
                 if (column_name.toLowerCase().includes('first_name')) return faker.person.firstName;
                 if (column_name.toLowerCase().includes('last_name')) return faker.person.lastName;
-                if (column_name.toLowerCase().includes('name')) return faker.person.fullName;
                 break; // Exit switch, go to the default AI case below
 
             case 'date':
@@ -191,10 +232,6 @@ const getFakerMethodForColumn = async (column_name, data_type, table_name) => {
 
             case 'boolean':
                 return faker.datatype.boolean;
-
-            case 'array':
-            case 'ARRAY':
-                return () => `{${faker.lorem.words(3).split(' ').join(',')}}`; // Example of converting to PostgreSQL array format
 
             default:
                 break; // Exit switch, go to the AI case below
@@ -247,12 +284,9 @@ const generatePrimaryKey = (column_name, generatedKeys) => {
     return value;
 };
 
-
-
 // Generate column values
 const generateColumnValue = async (column_name, data_type, character_maximum_length) => {
     let fakerMethod = await getFakerMethodForColumn(column_name, data_type);
-
 
     if (typeof fakerMethod !== 'function') {
         console.warn(`Faker method for ${column_name} is not a function. Using fallback.`);
@@ -287,29 +321,34 @@ const handleForeignKey = async (foreignKeyData, column_name) => {
     return value;
 };
 
-
-
-const generateDataForRow = async (schema, primaryKeyColumns, foreignKeyData, generatedKeys) => {
-    console.log('Primary Key Columns before includes:', primaryKeyColumns); // Add this line for debugging
+const generateDataForRow = async (schema, primaryKeyColumns, foreignKeyData, generatedKeys, table_name) => {
+    console.log('Primary Key Columns before includes:', primaryKeyColumns);
     const rowData = {};
+    
     for (const column of schema) {
         const { column_name, data_type, character_maximum_length } = column;
         let value;
 
-        // Use the type check before calling includes
+        // Handle primary key generation
         if (Array.isArray(primaryKeyColumns) && primaryKeyColumns.includes(column_name)) {
             value = generatePrimaryKey(column_name, generatedKeys);
-        } else if (foreignKeyData[column_name]) {
-            value = await handleForeignKey(foreignKeyData, column_name);
-        } else {
-            value = await generateColumnValue(column_name, data_type, character_maximum_length);
+        } 
+        // Handle foreign keys using pre-fetched data
+        else if (foreignKeyData[column_name]) {
+            console.log(`Using foreign key data for column: ${column_name}`);
+            value = faker.helpers.arrayElement(foreignKeyData[column_name].values);
+        } 
+        // Generate other values using Faker or AI
+        else {
+            value = await getFakerMethodForColumn(column_name, data_type, table_name, foreignKeyData);
         }
 
-        rowData[column_name] = value;
+        // Assign the value to the column
+        rowData[column_name] = typeof value === 'function' ? value() : value;
     }
+
     return rowData;
 };
-
 
 
 
@@ -338,14 +377,14 @@ const insertSingleRow = async (tableName, rowData) => {
 
 // Main function to generate fake data for a table
 const generateFakeData = async (tableName, rowCount = 3, foreignKeyData = {}) => {
+
+    console.log(`foreignKeyData received in generateFakeData: ${JSON.stringify(foreignKeyData, null, 2)}`);
+
     const data = [];
     try {
-
-        console.log(`We have reached this point`);
         const schema = await getTableSchema(tableName);
         const primaryKeyColumns = schema.filter(column => column.is_primary_key).map(column => column.column_name);
         const generatedKeys = {};
-
 
         for (let i = 0; i < rowCount; i++) {
             const rowData = await generateDataForRow(schema, primaryKeyColumns, foreignKeyData, generatedKeys, tableName);

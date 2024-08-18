@@ -9,6 +9,11 @@ const cors = require('cors');
 const { generateFakeData } = require('./services/generateFakeData');
 const { extractTableName } = require('./services/executeSQL');
 const { getForeignKeyData } = require('./services/generateFakeData');
+const { backupTableData } = require('./services/updateRecords');
+const { migrateData } = require('./services/updateRecords');
+const { validateSchemaUpdate } = require('./services/updateRecords');
+const { extractForeignKeyInfo } = require('./services/executeSQL');
+
 
 const app = express();
 const port = 3001;
@@ -35,7 +40,10 @@ app.post('/api/generate-schema', async (req, res) => {
                 { role: 'system', content: 'You are a PostgreSQL expert.' },
                 {
                     role: 'user', content: `Generate a clean PostgreSQL CREATE TABLE statement. Do not include any explanations, 
-                    and ensure that the code only contains the CREATE TABLE statement without any CREATE SCHEMA or other additional statements. 
+                    and ensure that the code only contains the CREATE TABLE statement without any CREATE SCHEMA or other additional statements.
+                    Ensure that the schema title does not contain '.'. It should only use '_' if a non-alphabetic character is needed.
+                    Ensure that the id key is specific to the schema. It should have more detail that just id. Make sure that all of the 
+                    column names correlate to the prompt as much as possible.
                     The table should be for the following structure: ${prompt}.`
                 }
             ],
@@ -79,6 +87,28 @@ app.post('/api/generate-schema', async (req, res) => {
     }
 });
 
+/*
+app.put('/api/update-schema', async (req, res) => {
+    const { schemaId, sqlCode } = req.body;
+
+    try {
+        const { data, error } = await supabase
+            .from('schemas')
+            .update({ sql_code: sqlCode })
+            .eq('id', schemaId);
+
+        if (error) {
+            throw error;
+        }
+
+        res.status(200).json({ message: 'Schema updated successfully.' });
+    } catch (error) {
+        console.error('Error updating schema:', error.message);
+        res.status(500).json({ error: 'Failed to update schema. Please try again.' });
+    }
+});
+*/
+
 // Endpoint to generate fake data based on the SQL schema
 app.post('/api/generate-data', async (req, res) => {
     const { schemaId } = req.body;
@@ -108,7 +138,7 @@ app.post('/api/generate-data', async (req, res) => {
 
         // Generate fake data for the newly created table
         console.log(`Generating fake data for table: ${tableName}`);
-        const generatedData = await generateFakeData(tableName, 3); // Adjust the number of rows as needed
+        const generatedData = await generateFakeData(tableName, 1); // Adjust the number of rows as needed
 
         // Return the generated data along with the success message
         res.json({
@@ -121,7 +151,6 @@ app.post('/api/generate-data', async (req, res) => {
         res.status(500).json({ error: 'Failed to generate data. Please try again.' });
     }
 });
-
 
 
 app.post('/api/generate-more-data', async (req, res) => {
@@ -147,9 +176,25 @@ app.post('/api/generate-more-data', async (req, res) => {
             return res.status(500).json({ error: 'Failed to extract table name from SQL code.' });
         }
 
+        const foreignKeyDetails = extractForeignKeyInfo(sqlCode); // Assuming you have this function available
+        console.log(`Extracted: ${foreignKeyDetails}`)
+        let foreignKeyData = {};
+
+        if (foreignKeyDetails.length > 0) {
+            for (const foreignKey of foreignKeyDetails) {
+                const { sourceTable, columnName } = foreignKey;
+                const foreignKeyValues = await getForeignKeyData(sourceTable, columnName);
+                foreignKeyData[columnName] = {
+                    tableName: sourceTable,
+                    columnName,
+                    values: foreignKeyValues
+                };
+            }
+        }
+
         // Generate additional fake data for the existing table
         console.log(`Generating ${additionalRows} more rows of fake data for table: ${tableName}`);
-        const additionalData = await generateFakeData(tableName, additionalRows); // Generate the specified number of rows
+        const additionalData = await generateFakeData(tableName, additionalRows, foreignKeyData); // Generate the specified number of rows
 
         // Return the generated data
         res.json({
@@ -168,9 +213,6 @@ app.post('/api/generate-data-with-foreign-keys', async (req, res) => {
     const { schemaId, foreignKeySourceTable, foreignKeyColumn } = req.body;
 
     try {
-
-    
-
         // Retrieve the SQL code using the schema ID
         const { data, error } = await supabase.from('schemas').select('sql_code').eq('id', schemaId).single();
 
@@ -206,9 +248,13 @@ app.post('/api/generate-data-with-foreign-keys', async (req, res) => {
         }
         console.log(`Calling generateFakeData with tableName: ${tableName}, rowCount: 3, foreignKeyData:`, foreignKeyData);
         // Generate fake data for the newly created table, using foreign key data
-        await generateFakeData(tableName, 3, foreignKeyData); 
+        const generatedData = await generateFakeData(tableName, 1, foreignKeyData); 
 
-        res.json({ message: 'Table created and fake data generated successfully', tableName });
+        res.json({ 
+            message: 'Table created and fake data generated successfully', 
+            tableName,
+            data: generatedData
+        });
     } catch (error) {
         console.error('Error generating data with foreign keys:', error.message);
         res.status(500).json({ error: 'Failed to generate data. Please try again.' });
@@ -238,6 +284,73 @@ app.post('/api/update-record', async (req, res) => {
         res.status(500).json({ error: 'Failed to update record. Please try again.' });
     }
 });
+
+app.put('/api/update-schema', async (req, res) => {
+    console.log('Starting update-schema endpoint...'); // Debug log
+
+    const { schemaId, newSqlCode, columnMapping } = req.body;
+    
+    try {
+        // Fetch the existing schema
+        const { data: existingSchema, error: fetchError } = await supabase
+            .from('schemas')
+            .select('sql_code')
+            .eq('id', schemaId)
+            .single();
+
+        if (fetchError || !existingSchema) throw new Error('Failed to fetch existing schema');
+
+        const oldSqlCode = existingSchema.sql_code;
+        console.log('Old SQL Code:', oldSqlCode); // Debug log
+
+        const tableName = extractTableName(oldSqlCode);
+
+        // Validate new schema against the existing one
+        const isValid = validateSchemaUpdate(newSqlCode, oldSqlCode);
+        if (!isValid) {
+            return res.status(400).json({ error: 'Schema update is invalid. Please review your changes.' });
+        }
+        // Backup existing data before making any changes
+        const backupData = await backupTableData(tableName);
+
+        // Invalidate the cache for this table schema
+        await redisClient.del(`tableschema:${tableName}`);
+        console.log(`Cache first time invalidated for table schema: ${tableName}`); 
+
+        // Update the schema in the database
+        const { error: updateError } = await supabase
+            .from('schemas')
+            .update({ sql_code: newSqlCode })
+            .eq('id', schemaId);
+
+        // Migrate existing data to fit the new schema
+        await migrateData(oldSqlCode, newSqlCode, tableName, columnMapping);
+
+        if (updateError) throw new Error('Failed to update schema');
+
+        // Invalidate the cache for this table schema
+        await redisClient.del(`tableschema:${tableName}`);
+        console.log(`Cache second time invalidated for table schema: ${tableName}`); 
+
+        // Fetch the updated schema after the update
+        const { data: updatedSchema } = await supabase
+            .from('schemas')
+            .select('sql_code')
+            .eq('id', schemaId)
+            .single();
+
+        res.status(200).json({ 
+            message: 'Schema updated and data migrated successfully.', 
+            sql_code: updatedSchema.sql_code, 
+            table_name: tableName 
+        });
+    } catch (error) {
+        console.error('Error during schema update:', error.message);
+        res.status(500).json({ error: 'Failed to update schema. Please try again.' });
+    }
+});
+
+
 
 
 app.get('/api/users', async (req, res) => {

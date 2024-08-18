@@ -5,26 +5,32 @@ import { FaPlus } from 'react-icons/fa';
 function DataDisplay({ data, visibleRows, handleShowMore, loading, additionalRows, setAdditionalRows, handleGenerateMoreData }) {
     console.log('Data in DataDisplay:', data);  // Add this line
     return (
-        <div className="card bg-dark mt-4 p-4 shadow-sm">
-            <h3>Generated Fake Data</h3>
-            <table className="table table-dark table-bordered table-hover">
-                <thead>
-                    <tr>
-                        {Object.keys(data[0]).map((key) => (
-                            <th key={key}>{key}</th>
-                        ))}
-                    </tr>
-                </thead>
-                <tbody>
-                    {data.slice(0, visibleRows).map((row, index) => (
-                        <tr key={index}>
-                            {Object.values(row).map((value, i) => (
-                                <td key={i}>{value}</td>
+        <div className="data-display">
+            <div className="card mt-4 p-4 shadow-sm">
+            <label htmlFor="prompt" className="form-label">
+                    Generated Data:
+                </label>
+            <div className="table-responsive">
+                <table className="table table-dark table-bordered table-hover">
+                    <thead>
+                        <tr>
+                            {Object.keys(data[0]).map((key) => (
+                                <th key={key} className="text-light">{key}</th>
                             ))}
                         </tr>
-                    ))}
-                </tbody>
-            </table>
+                    </thead>
+                    <tbody>
+                        {data.slice(0, visibleRows).map((row, index) => (
+                            <tr key={index}>
+                                {Object.values(row).map((value, i) => (
+                                    <td key={i} className="text-light">{value}</td>
+                                ))}
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            </div>
+            </div>
             {visibleRows < data.length && (
                 <button
                     className="btn btn-info mt-3"
@@ -35,8 +41,9 @@ function DataDisplay({ data, visibleRows, handleShowMore, loading, additionalRow
                 </button>
             )}
             <div className="form-group mt-4">
-                <label htmlFor="additionalRows">Generate more rows:</label>
-                <input
+            <label htmlFor="additionalRows" className="form-label">
+                    Generate more rows:
+                </label>                <input
                     type="number"
                     className="form-control bg-secondary text-light"
                     id="additionalRows"
@@ -46,7 +53,7 @@ function DataDisplay({ data, visibleRows, handleShowMore, loading, additionalRow
                 />
             </div>
             <button
-                className="btn btn-warning mt-3"
+                className="btn btn-primary mt-3"
                 onClick={handleGenerateMoreData}
                 disabled={loading}
             >

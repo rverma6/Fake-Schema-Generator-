@@ -13,6 +13,7 @@ const { backupTableData } = require('./services/updateRecords');
 const { migrateData } = require('./services/updateRecords');
 const { validateSchemaUpdate } = require('./services/updateRecords');
 const { extractForeignKeyInfo } = require('./services/executeSQL');
+const { getTableSchema } = require('./services/generateFakeData');
 
 
 const app = express();
@@ -374,6 +375,53 @@ app.put('/api/update-schema', async (req, res) => {
         res.status(500).json({ error: 'Failed to update schema. Please try again.' });
     }
 });
+
+app.put('/api/update-individual-record', async (req, res) => {
+    const { tableName, columnName, newValue, id } = req.body;
+
+    console.log(`Attempting to update individual record from table ${tableName} in column ${columnName} with value ${newValue}`);
+
+    try {
+        // Fetch the table schema
+        const schema = await getTableSchema(tableName);
+
+        // Find the primary key column from the schema
+        const primaryKeyColumn = schema.find(column => column.is_primary_key);
+
+        if (!primaryKeyColumn) {
+            console.error(`Primary key not found for table ${tableName}`);
+            return res.status(400).json({ error: 'Primary key not found for the specified table.' });
+        }
+
+        console.log(`Primary key column identified: ${primaryKeyColumn.column_name}`);
+        console.log(`ID received: ${id}`);
+
+        // Ensure the id is valid
+        if (id === undefined || id === null) {
+            console.error(`Invalid ID provided: ${id}`);
+            return res.status(400).json({ error: 'Invalid ID provided.' });
+        }
+
+        // Update the record in the specified table
+        const { data, error } = await supabase
+            .from(tableName)
+            .update({ [columnName]: newValue })
+            .eq(primaryKeyColumn.column_name, id);
+
+        if (error) {
+            console.error('Error updating data:', error.message);
+            return res.status(500).json({ error: 'Failed to update data. Please try again.' });
+        }
+
+        console.log('Data updated successfully:', data);
+        res.json({ message: 'Data updated successfully', data });
+
+    } catch (error) {
+        console.error('Error updating record:', error.message);
+        res.status(500).json({ error: 'Failed to update record. Please try again.' });
+    }
+});
+
 
 
 

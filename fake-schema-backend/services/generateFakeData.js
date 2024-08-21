@@ -155,6 +155,7 @@ const getAIScriptForColumn = async (table_name, column_name, data_type) => {
             }
 
             The custom function should use domain-specific knowledge and context provided by both the column name and table name to create data that fits the likely context of the column.
+            When dealing with numerical values, the custom function should ensure that the function does not result in integer overflow.
             Avoid unnecessary explanations or additional text, and focus on providing the custom function within the JSON object.`;
 
         console.log('Custom prompt for AI:', prompt);
